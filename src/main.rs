@@ -22,6 +22,7 @@ struct CosmoWaylandWorkSpace {
     handle: ExtWorkspaceHandleV1,
     state: Option<wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1::State>,
     name: String,
+    id: u32,
 }
 #[warn(dead_code)]
 
@@ -54,28 +55,44 @@ fn main() {
     assert!(workspace_data.done);
 
     let workspaces = workspace_data.workspaces.borrow().clone();
-    let target_workspace = if args.len() > 1 {
-        let size = match args[1].parse::<i32>() {
-            Ok(size) => {
-                size - 1
+    
+    if args.len() > 1 {
+        match args[1].trim() {
+            "get_active" => {
+                println!("{}", workspace_data.current_workspace.borrow().clone().unwrap().id);
             }
-            Err(_) => panic!("invalid argument: not int")
-        };
-        size
+            "switch" => {
+                let target_workspace = if args.len() > 2 {
+            let size = match args[2].parse::<i32>() {
+                Ok(size) => {
+                    size - 1
+                }
+                Err(_) => panic!("invalid argument: not int")
+            };
+            size
+                } else {
+                    panic!("args missing")
+                };
+
+                let workspace = if target_workspace > workspaces.len() as i32 {
+                    panic!("invalid argument: int too big")  
+                } else {
+                    &workspaces[target_workspace as usize]
+                };
+
+                workspace.handle.activate();
+                workspace_data.workspace_manager.borrow().clone().unwrap().commit();
+                // Flush pending outgoing events to the server
+                event_queue.flush().unwrap();
+                std::thread::sleep(Duration::from_secs(1));
+                event_queue.flush().unwrap();
+            
+            }
+            _ => panic!("args missing")
+        }
     } else {
-        panic!("needs int as arg")
+        panic!("args missing")
     };
-    let workspace = if target_workspace > workspaces.len() as i32 {
-        panic!("invalid argument: int too big")  
-    } else {
-        &workspaces[target_workspace as usize]
-    };
-    workspace.handle.activate();
-    workspace_data.workspace_manager.borrow().clone().unwrap().commit();
-    // Flush pending outgoing events to the server
-    event_queue.flush().unwrap();
-    std::thread::sleep(Duration::from_secs(1));
-    event_queue.flush().unwrap();
 }
 
 #[derive(Debug)]
@@ -166,6 +183,7 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for WorkspaceData {
                 let workspace_struct = CosmoWaylandWorkSpace {
                     handle: workspace_handles[count.clone()].clone(),
                     name,
+                    id: count.clone() as u32,
                     state: None,
                 };
                 *workspace_data.workspace_last_fill.borrow_mut() = Some(workspace_struct);
