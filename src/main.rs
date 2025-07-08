@@ -183,7 +183,7 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for WorkspaceData {
                 let workspace_struct = CosmoWaylandWorkSpace {
                     handle: workspace_handles[count.clone()].clone(),
                     name,
-                    id: count.clone() as u32,
+                    id: count.clone() as u32 + 1,
                     state: None,
                 };
                 *workspace_data.workspace_last_fill.borrow_mut() = Some(workspace_struct);
