@@ -40,14 +40,16 @@ fn main() {
     };
 
     // Continuously dispatch events until the "done" event is received
-    event_queue.blocking_dispatch(&mut workspace_data).unwrap();
-    event_queue.blocking_dispatch(&mut workspace_data).unwrap();
+        event_queue.blocking_dispatch(&mut workspace_data).unwrap();
+        event_queue.blocking_dispatch(&mut workspace_data).unwrap();
 
-    let wk = &workspace_data.workspaces.borrow().clone()[3];
-    wk.state.unwrap().set(State::Active, true);
-    wk.handle.activate();
-
-    dbg!(wk);
+        let wk = &workspace_data.workspaces.borrow().clone()[3];
+        let mut count = 0;
+        while count < 1000 {
+            wk.handle.activate();
+            workspace_data.workspace_manager.borrow().clone().unwrap().commit();
+            count += 1;
+        }
 
     // When done is true, you can perform any final actions if necessary
     println!("Event loop finished.");
