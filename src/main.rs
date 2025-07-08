@@ -1,23 +1,14 @@
-use std::{cell::RefCell, fs::File, ops::DerefMut, os::unix::io::AsFd, rc::Rc, time::Duration};
+use std::{cell::RefCell, rc::Rc, time::Duration};
 use wayland_client::{
-    delegate_dispatch, delegate_noop, event_created_child,
-    protocol::{
-        wl_buffer, wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-        wl_surface,
-    },
+    delegate_noop, event_created_child,
+    protocol::wl_registry,
     Connection, Dispatch, QueueHandle,
 };
-use wayland_protocols::{
-    ext::{
-        data_control,
-        workspace::{self, v1::client::{
-            ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
+use wayland_protocols::ext::workspace::v1::client::{
+            ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1,
             ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1, State},
             ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
-        }},
-    },
-    xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
-};
+        };
 
 use wayland_protocols::ext::workspace::v1::client::ext_workspace_manager_v1::{
     EVT_WORKSPACE_GROUP_OPCODE, EVT_WORKSPACE_OPCODE,
@@ -25,14 +16,18 @@ use wayland_protocols::ext::workspace::v1::client::ext_workspace_manager_v1::{
 
 delegate_noop!(WorkspaceData: ignore ExtWorkspaceGroupHandleV1);
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct CosmoWaylandWorkSpace {
     handle: ExtWorkspaceHandleV1,
     state: Option<wayland_protocols::ext::workspace::v1::client::ext_workspace_handle_v1::State>,
     name: String,
 }
+#[warn(dead_code)]
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+
     let conn = Connection::connect_to_env().unwrap();
     let mut event_queue = conn.new_event_queue();
     let qhandle = event_queue.handle();
@@ -59,15 +54,28 @@ fn main() {
     assert!(workspace_data.done);
 
     let workspaces = workspace_data.workspaces.borrow().clone();
-    let workspace = &workspaces[3];
+    let target_workspace = if args.len() > 1 {
+        let size = match args[1].parse::<i32>() {
+            Ok(size) => {
+                size - 1
+            }
+            Err(_) => panic!("invalid argument: not int")
+        };
+        size
+    } else {
+        panic!("needs int as arg")
+    };
+    let workspace = if target_workspace > workspaces.len() as i32 {
+        panic!("invalid argument: int too big")  
+    } else {
+        &workspaces[target_workspace as usize]
+    };
     workspace.handle.activate();
     workspace_data.workspace_manager.borrow().clone().unwrap().commit();
     // Flush pending outgoing events to the server
     event_queue.flush().unwrap();
     std::thread::sleep(Duration::from_secs(1));
     event_queue.flush().unwrap();
-
-    println!("Event loop finished.");
 }
 
 #[derive(Debug)]
@@ -118,7 +126,6 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for Workspace
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        println!("Received event in workspace manager: {:?}", event);
 
         // Process workspace events and add them to workspace_data
         if let ext_workspace_manager_v1::Event::Workspace { ref workspace, .. } = event {
@@ -132,7 +139,6 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for Workspace
 
         // Check for the "done" event and set done to true
         if let ext_workspace_manager_v1::Event::Done {} = event {
-            println!("Done event received, setting done = true");
             workspace_data.done = true; // Set done to true
         }
     }
@@ -169,12 +175,18 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for WorkspaceData {
                 match last_fill {
                     Some(mut w) => {
                         w.state = match state.into_result() {
-                            Ok(t) => Some(t),
+                            Ok(t) => {
+                                if t == State::Active {
+                                    *workspace_data.current_workspace.borrow_mut() = Some(w.clone());
+                                }
+                                Some(t)
+                            },
                             Err(_) => None,
                         };
                         workspace_data.workspaces.borrow_mut().push(w.clone());
                         last_fill = None;
                         *count += 1;
+                        assert!(last_fill.is_none())
                     }
                     None => {}
                 }
