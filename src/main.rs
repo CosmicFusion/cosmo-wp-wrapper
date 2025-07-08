@@ -1,16 +1,27 @@
-use std::{cell::RefCell, fs::File, ops::DerefMut, os::unix::io::AsFd, rc::Rc};
+use std::{cell::RefCell, fs::File, ops::DerefMut, os::unix::io::AsFd, rc::Rc, time::Duration};
 use wayland_client::{
-    delegate_dispatch, delegate_noop, event_created_child, protocol::{
-        wl_buffer, wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
-    }, Connection, Dispatch, QueueHandle,
+    delegate_dispatch, delegate_noop, event_created_child,
+    protocol::{
+        wl_buffer, wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+        wl_surface,
+    },
+    Connection, Dispatch, QueueHandle,
 };
-use wayland_protocols::{ext::{data_control, workspace::v1::client::{
-    ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1}, ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1, State}, ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1}
-}}, xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base}};
+use wayland_protocols::{
+    ext::{
+        data_control,
+        workspace::{self, v1::client::{
+            ext_workspace_group_handle_v1::{self, ExtWorkspaceGroupHandleV1},
+            ext_workspace_handle_v1::{self, ExtWorkspaceHandleV1, State},
+            ext_workspace_manager_v1::{self, ExtWorkspaceManagerV1},
+        }},
+    },
+    xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
+};
 
- use wayland_protocols::ext::workspace::v1::client::ext_workspace_manager_v1::{
-            EVT_WORKSPACE_GROUP_OPCODE, EVT_WORKSPACE_OPCODE,
-        };
+use wayland_protocols::ext::workspace::v1::client::ext_workspace_manager_v1::{
+    EVT_WORKSPACE_GROUP_OPCODE, EVT_WORKSPACE_OPCODE,
+};
 
 delegate_noop!(WorkspaceData: ignore ExtWorkspaceGroupHandleV1);
 
@@ -36,22 +47,26 @@ fn main() {
         current_workspace: Rc::new(RefCell::new(None)),
         workspace_group: Rc::new(RefCell::new(None)),
         workspaces: Rc::new(RefCell::new(Vec::new())),
-        workspace_handles: Rc::new(RefCell::new(Vec::new()))
+        workspace_handles: Rc::new(RefCell::new(Vec::new())),
+        done: false,
     };
 
     // Continuously dispatch events until the "done" event is received
-        event_queue.blocking_dispatch(&mut workspace_data).unwrap();
-        event_queue.blocking_dispatch(&mut workspace_data).unwrap();
+    while !workspace_data.done {
+        event_queue.roundtrip(&mut workspace_data).unwrap();
+    }
 
-        let wk = &workspace_data.workspaces.borrow().clone()[3];
-        let mut count = 0;
-        while count < 1000 {
-            wk.handle.activate();
-            workspace_data.workspace_manager.borrow().clone().unwrap().commit();
-            count += 1;
-        }
+    assert!(workspace_data.done);
 
-    // When done is true, you can perform any final actions if necessary
+    let workspaces = workspace_data.workspaces.borrow().clone();
+    let workspace = &workspaces[3];
+    workspace.handle.activate();
+    workspace_data.workspace_manager.borrow().clone().unwrap().commit();
+    // Flush pending outgoing events to the server
+    event_queue.flush().unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    event_queue.flush().unwrap();
+
     println!("Event loop finished.");
 }
 
@@ -64,6 +79,7 @@ struct WorkspaceData {
     workspace_group: Rc<RefCell<Option<ExtWorkspaceGroupHandleV1>>>,
     workspaces: Rc<RefCell<Vec<CosmoWaylandWorkSpace>>>,
     current_workspace: Rc<RefCell<Option<CosmoWaylandWorkSpace>>>,
+    done: bool,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for WorkspaceData {
@@ -78,8 +94,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WorkspaceData {
         if let wl_registry::Event::Global { name, interface, .. } = event {
             match &interface[..] {
                 "ext_workspace_manager_v1" => {
-                    let workspace_manager =
-                        registry.bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(name, 1, qh, ());
+                    let workspace_manager = registry
+                        .bind::<ext_workspace_manager_v1::ExtWorkspaceManagerV1, _, _>(
+                            name,
+                            1,
+                            qh,
+                            (),
+                        );
                     *workspace_data.workspace_manager.borrow_mut() = Some(workspace_manager);
                 }
                 _ => {}
@@ -100,20 +121,20 @@ impl Dispatch<ext_workspace_manager_v1::ExtWorkspaceManagerV1, ()> for Workspace
         println!("Received event in workspace manager: {:?}", event);
 
         // Process workspace events and add them to workspace_data
-        if let ext_workspace_manager_v1::Event::Workspace {  ref workspace, .. } = event {
+        if let ext_workspace_manager_v1::Event::Workspace { ref workspace, .. } = event {
             let mut workspace_handles = workspace_data.workspace_handles.borrow_mut();
             workspace_handles.push(workspace.clone());
         }
 
-        if let ext_workspace_manager_v1::Event::WorkspaceGroup {  ref workspace_group, .. } = event {
+        if let ext_workspace_manager_v1::Event::WorkspaceGroup { ref workspace_group, .. } = event {
             *workspace_data.workspace_group.borrow_mut() = Some(workspace_group.clone());
         }
 
         // Check for the "done" event and set done to true
-        /*if let ext_workspace_manager_v1::Event::Done {} = event {
+        if let ext_workspace_manager_v1::Event::Done {} = event {
             println!("Done event received, setting done = true");
-            workspace_data.done = true;  // Set done to true
-        }*/
+            workspace_data.done = true; // Set done to true
+        }
     }
 
     event_created_child!(WorkspaceData, ExtWorkspaceManagerV1, [
@@ -137,9 +158,9 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for WorkspaceData {
         match event {
             ext_workspace_handle_v1::Event::Name { name } => {
                 let workspace_struct = CosmoWaylandWorkSpace {
-                            handle: workspace_handles[count.clone()].clone(),
-                            name: name,
-                            state: None,
+                    handle: workspace_handles[count.clone()].clone(),
+                    name,
+                    state: None,
                 };
                 *workspace_data.workspace_last_fill.borrow_mut() = Some(workspace_struct);
             }
@@ -153,7 +174,7 @@ impl Dispatch<ExtWorkspaceHandleV1, ()> for WorkspaceData {
                         };
                         workspace_data.workspaces.borrow_mut().push(w.clone());
                         last_fill = None;
-                        *count +=1 ;
+                        *count += 1;
                     }
                     None => {}
                 }
